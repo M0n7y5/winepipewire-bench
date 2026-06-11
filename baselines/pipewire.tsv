@@ -1,5 +1,5 @@
 # driver=pipewire date=2026-06-11T17:39:15+02:00 host=7.0.11-1-cachyos
-# wine=a8f72d00271
+# wine=5a96e3ed554
 # pipewire=1.6.6
 conf_x86_64_mmdevenum_failures	0
 conf_x86_64_render_failures	0
