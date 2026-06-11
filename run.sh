@@ -19,9 +19,9 @@
 #
 # Exit: 0 all PASS, 1 a check FAILED, 2 bad usage, 77 prerequisites missing.
 #
-# Env (all optional):
+# Env:
 #   WINEPREFIX   wine prefix             (default: ~/.pwwow64)
-#   WINE_BUILD   wine build dir          (default: ~/path/to/wine-cachyos/build)
+#   WINE_BUILD   wine build dir          (required; export it or set it in local.env)
 #   DRIVER       pipewire | pulse        (default: pipewire)
 #   PERF_GATE    1=enforce perf bounds   (default: 1 for pipewire, 0 for pulse)
 #   N            streams for phase/multi (default: 4)
@@ -33,7 +33,10 @@ set -uo pipefail
 BENCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="$BENCH_DIR/bin"
 WINEPREFIX="${WINEPREFIX:-$HOME/.pwwow64}"
-WINE_BUILD="${WINE_BUILD:-$HOME/path/to/wine-cachyos/build}"
+if [ -z "${WINE_BUILD:-}" ] && [ -f "$BENCH_DIR/local.env" ]; then
+    . "$BENCH_DIR/local.env"
+fi
+WINE_BUILD="${WINE_BUILD:-}"
 DRIVER="${DRIVER:-pipewire}"
 case "$DRIVER" in
     pipewire|pulse) ;;
@@ -45,6 +48,9 @@ STRESS_N="${STRESS_N:-24}"
 DUR="${DUR:-15}"
 RUN_CONFORMANCE="${RUN_CONFORMANCE:-1}"
 
+if [ -z "$WINE_BUILD" ]; then
+    echo "SKIP: WINE_BUILD is not set; export it or put it in local.env (see README)"; exit 77
+fi
 WINE="$WINE_BUILD/loader/wine"
 
 # thresholds (see BASELINES.md)

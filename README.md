@@ -55,8 +55,10 @@ probe's own source changes, **not** when the driver changes.
 ## Usage
 
 ```sh
-# 1. build the probes (point WINE_BUILD at your wine build dir if not the default)
-WINE_BUILD=~/path/to/wine-cachyos/build ./build.sh
+# 0. point the harness at your wine build tree once (local.env is gitignored)
+echo 'WINE_BUILD=$HOME/path/to/wine-cachyos/build' > local.env
+# 1. build the probes
+./build.sh
 # optional: WoW64 / 32-bit probes
 ARCH=i386-windows ./build.sh
 

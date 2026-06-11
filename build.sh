@@ -6,15 +6,22 @@
 # the driver changes; rebuild only when a probe's own source changes.
 #
 # Env:
-#   WINE_BUILD  wine build directory holding tools/winegcc (default: ~/path/to/wine-cachyos/build)
+#   WINE_BUILD  wine build directory holding tools/winegcc (required; export it or set it in local.env)
 #   ARCH        winegcc target arch (default: x86_64-windows; use i386-windows for the WoW64 path)
 set -euo pipefail
 
 BENCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WINE_BUILD="${WINE_BUILD:-$HOME/path/to/wine-cachyos/build}"
+if [ -z "${WINE_BUILD:-}" ] && [ -f "$BENCH_DIR/local.env" ]; then
+    . "$BENCH_DIR/local.env"
+fi
+WINE_BUILD="${WINE_BUILD:-}"
 ARCH="${ARCH:-x86_64-windows}"
 OUT="$BENCH_DIR/bin"
 
+if [ -z "$WINE_BUILD" ]; then
+    echo "error: WINE_BUILD is not set; export it or put it in local.env (see README)" >&2
+    exit 2
+fi
 if [ ! -x "$WINE_BUILD/tools/winegcc/winegcc" ]; then
     echo "error: winegcc not found at $WINE_BUILD/tools/winegcc/winegcc" >&2
     echo "       set WINE_BUILD to your wine build directory (got: $WINE_BUILD)" >&2
