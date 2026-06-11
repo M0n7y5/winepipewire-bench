@@ -57,8 +57,8 @@ winepipewire review series end-to-end:
   grid against an extrapolated graph clock; regressing to the raw
   `pw_time.now` cycle-start staircase smears wakeup intervals across
   period +/- period/2 whenever the graph quantum does not divide the period
-  (sd jumps 0.014 ms -> ~2.1 ms at quantum 256, caught by
-  `compare.sh --check`).
+  (sd jumps from the 0.01-0.13 ms idle noise band to ~2.1 ms at quantum
+  256, caught by `compare.sh --check`).
 
 ## Conformance (Wine `mmdevapi` suite, the correctness net)
 
@@ -122,13 +122,13 @@ From `compare.sh` on the recorded baselines, the headline numbers:
 
 | metric | pipewire | pulse |
 |---|---:|---:|
-| stream open p50 | 703 us | 5104 us |
-| stream open p99 | 1816 us | 6362 us |
-| CPU, PipeWire daemons (24 streams) | 1.4 % | 6.1 % |
-| CPU, client process (24 streams) | 5.0 % | 6.0 % |
-| event-interval jitter sd (worst stream) | 0.014 ms | 0.49 ms |
-| event-interval p99 | 10.03 ms | 10.73 ms |
-| working set after churn | ~27.9 MB | ~26.6 MB |
+| stream open p50 | 722 us | 4679 us |
+| stream open p99 | 2021 us | 6074 us |
+| CPU, PipeWire daemons (24 streams) | 1.4 % | 6.3 % |
+| CPU, client process (24 streams) | 4.2 % | 5.0 % |
+| event-interval jitter sd (worst stream) | 0.068 ms | 0.51 ms |
+| event-interval p99 | 10.05 ms | 10.72 ms |
+| working set after churn | ~27.8 MB | ~26.5 MB |
 | client threads (LWP, N=4 streams) | 7 | 6 |
 | conformance | identical | identical |
 
@@ -138,8 +138,8 @@ Known, explained deltas where winepulse measures better:
   libpipewire-0.3 + SPA plugins map ~2.6 MB RSS in the client (format
   conversion/resampling run in-process), libpulse only ~0.8 MB because
   pipewire-pulse does that work in the daemon. The flip side is the daemon
-  CPU row above (1.4 % vs 6.1 %): total CPU for 24 streams is ~6.4 % vs
-  ~12.1 % in winepipewire's favour.
+  CPU row above (1.4 % vs 6.3 %): total CPU for 24 streams is ~5.6 % vs
+  ~11.3 % in winepipewire's favour.
 - **LWP (+1 thread)**: winepipewire runs its per-(device, period) group timer
   on a dedicated thread, while winepulse schedules the equivalent group timer
   as a pa_time_event on its existing mainloop thread. One thread per period
