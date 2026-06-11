@@ -115,7 +115,10 @@ awk -F'\t' -v maxr="$MAXR" '
     BEGIN {
         # lower-is-better metrics and their absolute-slack epsilons
         eps["phase_sd_ms"]        = 0.05
-        eps["evt_interval_sd_ms"] = 0.05
+        # evt_interval_sd is bimodal on an idle machine (0.01-0.13 ms): a few
+        # ~1 ms-late wakeups out of ~1400 dominate the quadratic statistic.
+        # The guarded regression (cycle-start staircase) sits at ~2.1 ms.
+        eps["evt_interval_sd_ms"] = 0.15
         eps["evt_interval_p99_ms"]= 0.5
         eps["drift_us"]           = 200
         eps["open_p50_us"]        = 200
