@@ -25,6 +25,7 @@ probes/   wpw_phase.c    sub-period event-phase jitter + LWP count (the sync met
           wpw_stress.c   churn (open/close cycles + leak check), many (N concurrent
                          streams), ratechurn (IAudioClockAdjustment::SetSampleRate)
           wpw_loopcap.c  WASAPI loopback capture integrity (tone round-trip)
+          wpw_caps.c     IAudioClient3 engine-period caps + 7.1 surround mix format
 build.sh                 cross-compiles the probes to PE via the Wine tree's winegcc
 run.sh                   selects the driver, runs everything, prints a PASS/FAIL
                          report, and appends every metric to results/<driver>-*.tsv
@@ -92,7 +93,27 @@ WINE=~/path/to/wine-cachyos/build/loader/wine
 WINEPREFIX=~/.pwwow64 $WINE bin/wpw_phase.exe 4 20
 WINEPREFIX=~/.pwwow64 $WINE bin/wpw_stress.exe ratechurn 8
 WINEPREFIX=~/.pwwow64 $WINE bin/wpw_loopcap.exe 4 440
+WINEPREFIX=~/.pwwow64 $WINE bin/wpw_caps.exe WPW71SURROUND   # name needs the 7.1 null sink loaded
 ```
+
+## Latency knobs
+
+libpipewire applies its environment knobs at `pw_stream_connect()` *after*
+merging the stream's own properties, so they override the driver's
+`node.latency` (one graph period per WASAPI period) per process:
+
+```sh
+PIPEWIRE_LATENCY=128/48000 wine game.exe   # force a 128-frame graph quantum
+PIPEWIRE_QUANTUM=128/48000                 # same, plus pins the graph rate
+PIPEWIRE_NODE=<object.serial|name>         # route to a specific sink
+PIPEWIRE_PROPS='{ media.role = "Game" }'   # arbitrary stream properties
+```
+
+On the WASAPI side, winepipewire derives the IAudioClient3 shared-mode
+minimum period from the graph's `clock.min-quantum` (clamped to 128 frames,
+the typical Windows floor; never above the previous 3 ms value). Verified by
+the `wpw_caps` gate: `engine_min_frames=128`, where winepulse reports
+whatever the PA server's buffer attrs negotiate (256 under pipewire-pulse).
 
 ## License
 

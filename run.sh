@@ -12,6 +12,7 @@
 #   7. wpw_stress many      : N concurrent streams + CPU/xrun sampling
 #   8. wpw_stress ratechurn : IAudioClockAdjustment SetSampleRate toggling
 #   9. wpw_loopcap : WASAPI loopback capture integrity (tone round-trip)
+#  10. wpw_caps   : IAudioClient3 engine periods + 7.1 null-sink surround
 # and prints a one-page report with PASS/FAIL against BASELINES.md thresholds.
 # Every measurement is also appended to results/<driver>-<timestamp>.tsv
 # (copied to results/<driver>-latest.tsv) for compare.sh.
@@ -80,7 +81,7 @@ tok() { echo "$1" | grep -oE "$2=-?[0-9.]+" | head -1 | cut -d= -f2; }
 
 # ---- prerequisites -------------------------------------------------------
 [ -x "$WINE" ]      || { echo "SKIP: wine loader not found at $WINE"; exit 77; }
-for p in wpw_phase wpw_multi wpw_tone wpw_open wpw_stress wpw_loopcap; do
+for p in wpw_phase wpw_multi wpw_tone wpw_open wpw_stress wpw_loopcap wpw_caps; do
     [ -x "$BIN/$p.exe" ] || { echo "SKIP: $BIN/$p.exe missing; run build.sh first"; exit 77; }
 done
 SOCK="/run/user/$(id -u)/pipewire-0"
@@ -386,6 +387,60 @@ if awk -v r="${l_ratio:-0}" 'BEGIN{exit !(r+0 >= 0.5)}'; then
     pass "loopcap tone ratio ${l_ratio} >= 0.5 (sink capture, not mic)"; else fail "loopcap tone ratio ${l_ratio:-?} < 0.5 (wrong source?)"; fi
 if [ -n "${l_disc:-}" ] && [ "${l_disc:-999}" -le 1 ]; then
     pass "loopcap discontinuities ${l_disc} <= 1"; else fail "loopcap discontinuities ${l_disc:-?} > 1"; fi
+
+# ---- 10. capability surface (engine periods + 7.1 surround) ---------------
+echo; echo "-- wpw_caps (IAudioClient3 periods + 7.1 null-sink surround) --"
+caps_out=$("$WINE" "$BIN/wpw_caps.exe" 2>/dev/null)
+cline=$(echo "$caps_out" | grep 'engine_def_frames=' || true)
+echo "    ${cline:-$caps_out}"
+c_def=$(tok "$cline" engine_def_frames); c_min=$(tok "$cline" engine_min_frames)
+metric engine_def_frames "${c_def:-0}"
+metric engine_min_frames "${c_min:-0}"
+# winepipewire derives the floor from clock.min-quantum (128-frame clamp):
+# a deterministic contract, gated.  winepulse probes its min/def from the
+# PA server's negotiated buffer attrs (e.g. 256 frames under
+# pipewire-pulse), environment-dependent: informational only.
+if [ "$DRIVER" = pipewire ]; then
+    if [ "${c_def:-0}" = 480 ] && [ "${c_min:-0}" = 128 ]; then
+        pass "engine periods def=480 min=128 frames"
+    else
+        fail "engine periods def=${c_def:-?} min=${c_min:-?} (expected 480/128)"
+    fi
+else
+    note "INFO  engine periods def=${c_def:-?} min=${c_min:-?} (probed from PA, not gated)"
+fi
+
+if command -v pactl >/dev/null 2>&1; then
+    SURROUND_MOD=$(pactl load-module module-null-sink sink_name=wpw71 \
+        channel_map=front-left,front-right,front-center,lfe,rear-left,rear-right,side-left,side-right \
+        sink_properties=device.description=WPW71SURROUND 2>/dev/null)
+    if [ -n "$SURROUND_MOD" ]; then
+        sleep 1
+        sur_out=$("$WINE" "$BIN/wpw_caps.exe" WPW71SURROUND 2>/dev/null)
+        sur_rc=$?
+        pactl unload-module "$SURROUND_MOD" >/dev/null 2>&1
+        sline=$(echo "$sur_out" | grep 'mix_channels=' || true)
+        s_found=$(tok "$sur_out" dev_found)
+        s_ch=$(tok "$sline" mix_channels); s_mask=$(tok "$sline" mix_mask)
+        s_51=$(tok "$sur_out" fmt51_supported); s_errs=$(tok "$sur_out" render_errors)
+        echo "    found=${s_found:-0} ${sline:-$sur_out} fmt51=${s_51:-?} render_errors=${s_errs:-?}"
+        metric surround_mix_channels "${s_ch:-0}"
+        metric surround_mix_mask "${s_mask:-0}"
+        metric surround_fmt51_supported "${s_51:-0}"
+        metric surround_render_errors "${s_errs:-999}"
+        if [ "$sur_rc" = 0 ] && [ "${s_ch:-0}" = 8 ] && [ "${s_mask:-0}" = 1599 ]; then
+            pass "surround mix format 8ch mask 1599 (7.1)"
+        else
+            fail "surround mix format (rc=$sur_rc ch=${s_ch:-?} mask=${s_mask:-?})"
+        fi
+        if [ "${s_51:-0}" = 1 ]; then pass "5.1 shared format supported"; else fail "5.1 shared format rejected"; fi
+        if [ "${s_errs:-999}" = 0 ]; then pass "surround render errors 0"; else fail "surround render errors ${s_errs:-?}"; fi
+    else
+        note "INFO  surround check skipped (could not load module-null-sink)"
+    fi
+else
+    note "INFO  surround check skipped (no pactl)"
+fi
 
 # ---- report --------------------------------------------------------------
 cp -f "$TSV" "$BENCH_DIR/results/${DRIVER}-latest.tsv"

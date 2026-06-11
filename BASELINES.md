@@ -88,6 +88,26 @@ exactly 6.
 timing and confirms dropping the old `just_started`/`just_underran` resync in
 favour of the group timer's grid-(re)acquire deferral is behaviourally exact.
 
+## Capability gates (`wpw_caps`)
+
+- **IAudioClient3 engine periods** (default render device, 48 kHz context
+  of record): gated on winepipewire only: `engine_def_frames == 480` and
+  `engine_min_frames == 128`, derived from the graph's `clock.min-quantum`
+  (32 here) clamped to the 128-frame Windows-style floor, floor-divided so
+  the mmdevapi frame round-trip is exact. The minimum can only improve on
+  the previous 3 ms: with `clock.force-quantum` or a large min-quantum the
+  advertised value clamps back at 3 ms, and without settings metadata it
+  stays 3 ms. winepulse is informational here: it probes min/def from the
+  PA server's negotiated buffer attrs (256 frames under pipewire-pulse on
+  this machine), which is server-config-dependent, not a driver contract.
+- **7.1 surround negotiation**: run.sh loads a `module-null-sink` with an
+  explicit 8-channel map (FL FR FC LFE RL RR SL SR), and the probe asserts
+  the endpoint's mix format is 8 channels with mask 1599 (0x63F,
+  `KSAUDIO_SPEAKER_7POINT1_SURROUND`), that a 5.1 float format passes
+  `IsFormatSupported`, and that an 8-channel shared stream renders ~300 ms
+  with zero errors. This is the end-to-end proof of the SPA-position <->
+  WASAPI-mask tables in both drivers; enforced for both.
+
 ## Machine baseline (`baselines/pipewire.tsv`)
 
 Every `run.sh` invocation appends all metrics to
