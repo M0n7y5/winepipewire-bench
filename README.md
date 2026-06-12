@@ -27,6 +27,8 @@ probes/   wpw_phase.c    sub-period event-phase jitter + LWP count (the sync met
           wpw_loopcap.c  WASAPI loopback capture integrity (tone round-trip)
           wpw_miccap.c   default eCapture endpoint integrity (run it against a
                          remap-source virtual mic fed a known tone; see file header)
+          wpw_spatial.c  ISAC dynamic-object placement via loopback ILD gates
+                         (needs HKCU\Software\Wine\mmdevapi SpatialSound=1)
           wpw_caps.c     IAudioClient3 engine-period caps + 7.1 surround mix format
 build.sh                 cross-compiles the probes to PE via the Wine tree's winegcc
 run.sh                   selects the driver, runs everything, prints a PASS/FAIL
