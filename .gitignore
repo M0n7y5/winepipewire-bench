@@ -1,4 +1,5 @@
 bin/
+bin-i386/
 results/
 report.md
 local.env
