@@ -192,6 +192,19 @@ int main(int argc, char **argv)
     if (!maxdyn) { printf("spatial=off\n"); return 77; }
     printf("max_dynamic_objects=%u\n", maxdyn);
 
+    {
+        AudioObjectType nmask = 0;
+        hr = ISpatialAudioClient_IsSpatialAudioStreamAvailable(g_sac,
+                &IID_ISpatialAudioObjectRenderStream, NULL);
+        if (hr != S_OK) { printf("IsSpatialAudioStreamAvailable %s\n", hrs(hr)); return 1; }
+        hr = ISpatialAudioClient_GetNativeStaticObjectTypeMask(g_sac, &nmask);
+        if (FAILED(hr)) { printf("GetNativeStaticObjectTypeMask %s\n", hrs(hr)); return 1; }
+        printf("stream_available=ok native_static_mask=0x%x\n", nmask);
+        if (nmask == 0 || (nmask & AudioObjectType_Dynamic)) {
+            printf("bad native static mask\n"); return 2;
+        }
+    }
+
     /* loopback capture on the same endpoint */
     hr = IMMDevice_Activate(dev, &IID_IAudioClient, CLSCTX_ALL, NULL, (void **)&ac);
     if (FAILED(hr)) { printf("Activate %s\n", hrs(hr)); return 1; }
