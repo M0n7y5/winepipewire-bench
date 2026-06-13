@@ -30,7 +30,7 @@ fi
 
 mkdir -p "$OUT"
 cd "$WINE_BUILD"
-for probe in wpw_phase wpw_multi wpw_tone wpw_open wpw_stress wpw_loopcap wpw_miccap wpw_spatial wpw_caps; do
+for probe in wpw_phase wpw_multi wpw_tone wpw_open wpw_stress wpw_loopcap wpw_miccap wpw_spatial wpw_spatial_bed wpw_caps; do
     echo "building $probe ($ARCH) ..."
     tools/winegcc/winegcc -o "$OUT/$probe.exe" --wine-objdir . \
         -b "$ARCH" -I../include -Iinclude -I../include/msvcrt -D_MSVCR_VER=0 \
