@@ -1,0 +1,185 @@
+diff --git a/src/hud_elements.cpp b/src/hud_elements.cpp
+index 8083591..db4ded5 100644
+--- a/src/hud_elements.cpp
++++ b/src/hud_elements.cpp
+@@ -4,6 +4,8 @@
+ #include <sstream>
+ #include <cmath>
+ #include <map>
++#include <fstream>
++#include <deque>
+ #include "overlay.h"
+ #include "overlay_params.h"
+ #include "hud_elements.h"
+@@ -1194,6 +1196,139 @@ void HudElements::_exec(){
+     ImGui::PopFont();
+ }
+ 
++struct audio_hud_stats {
++    bool present = false;
++    float dsp = 0.f;
++    int xrun = 0, quantum = 0, rate = 0, streams = 0;
++    float lvl_l = -120.f, lvl_r = -120.f;
++    bool hrtf = false, bed_on = false;
++    std::vector<float> bed_db;
++    std::vector<std::string> bed_name;
++};
++
++static std::string audio_stats_path() {
++    const char* env = getenv("MANGOHUD_AUDIO_STATS");
++    if (env && *env)
++        return env;
++    const char* home = getenv("HOME");
++    return std::string(home ? home : "/tmp") + "/.cache/pw-audio-hud/pw-stats.txt";
++}
++
++static bool parse_audio_stats(const std::string& path, audio_hud_stats& out) {
++    std::ifstream f(path);
++    if (!f.is_open())
++        return false;
++    audio_hud_stats s;
++    std::string line;
++    while (std::getline(f, line)) {
++        std::istringstream ls(line);
++        std::string key;
++        if (!(ls >> key))
++            continue;
++        if (key == "dsp") ls >> s.dsp;
++        else if (key == "xrun") ls >> s.xrun;
++        else if (key == "quantum") ls >> s.quantum;
++        else if (key == "rate") ls >> s.rate;
++        else if (key == "streams") ls >> s.streams;
++        else if (key == "lvl") ls >> s.lvl_l >> s.lvl_r;
++        else if (key == "hrtf") { int v = 0; ls >> v; s.hrtf = v != 0; }
++        else if (key == "bed") { int v = 0; ls >> v; s.bed_on = v != 0; }
++        else if (key == "ch") {
++            std::string nm; float db = -120.f;
++            if ((ls >> nm >> db) && s.bed_db.size() < 16) {
++                s.bed_name.push_back(nm);
++                s.bed_db.push_back(db);
++            }
++        }
++    }
++    s.present = true;
++    out = std::move(s);
++    return true;
++}
++
++void HudElements::audio() {
++    if (!HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_audio])
++        return;
++
++    static audio_hud_stats stats;
++    static std::deque<float> dsp_hist;
++    static Clock::time_point last_read{};
++
++    auto now = Clock::now();
++    if (now - last_read > std::chrono::milliseconds(100)) {
++        last_read = now;
++        audio_hud_stats ns;
++        if (parse_audio_stats(audio_stats_path(), ns)) {
++            stats = std::move(ns);
++            dsp_hist.push_back(stats.dsp);
++            while (dsp_hist.size() > 60)
++                dsp_hist.pop_front();
++        } else {
++            stats.present = false;
++        }
++    }
++
++    const float graph_w = ImGui::GetWindowContentRegionMax().x - ImGui::GetWindowContentRegionMin().x;
++    char overlay[64];
++
++    auto draw_graph = [&](const char* id, const float* data, int n, float vmax, float h, const char* ov){
++        ImguiNextColumnFirstItem();
++        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
++        char child_id[40];
++        snprintf(child_id, sizeof(child_id), "%s_w", id);
++        ImGui::BeginChild(child_id, ImVec2(graph_w, h), false, ImGuiWindowFlags_NoDecoration);
++        ImGui::PlotHistogram(id, data, n, 0, ov, 0.0f, vmax, ImVec2(graph_w, h));
++        ImGui::EndChild();
++        ImGui::PopStyleColor();
++        ImGui::TableSetColumnIndex(ImGui::TableGetColumnCount() - 1);
++    };
++
++    ImGui::PushFont(HUDElements.sw_stats->font_secondary);
++
++    ImguiNextColumnFirstItem();
++    HUDElements.TextColored(HUDElements.colors.engine, "%s", "AUDIO");
++
++    if (!stats.present) {
++        ImguiNextColumnOrNewRow();
++        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%s", "n/a");
++        ImGui::PopFont();
++        return;
++    }
++
++    ImGui::TableSetColumnIndex(ImGui::TableGetColumnCount() - 1);
++    snprintf(overlay, sizeof(overlay), "%dk q%d s%d x%d",
++        stats.rate / 1000, stats.quantum, stats.streams, stats.xrun);
++    right_aligned_text(stats.xrun > 0 ? HUDElements.colors.gpu_load_high : HUDElements.colors.text,
++        ImGui::GetContentRegionAvail().x, "%s", overlay);
++
++    {
++        std::vector<float> arr(dsp_hist.begin(), dsp_hist.end());
++        snprintf(overlay, sizeof(overlay), "DSP %.0f%%", stats.dsp);
++        draw_graph("##audio_dsp", arr.data(), (int)arr.size(), 100.0f, 30.0f, overlay);
++    }
++
++    {
++        const float floor_db = -60.f;
++        float lr[2] = {
++            std::min(1.f, std::max(0.f, (stats.lvl_l - floor_db) / -floor_db)),
++            std::min(1.f, std::max(0.f, (stats.lvl_r - floor_db) / -floor_db))
++        };
++        snprintf(overlay, sizeof(overlay), "OUT  L%.0f  R%.0f", stats.lvl_l, stats.lvl_r);
++        draw_graph("##audio_lvl", lr, 2, 1.0f, 25.0f, overlay);
++    }
++
++    if (!stats.bed_db.empty()) {
++        const float floor_db = -60.f;
++        std::vector<float> norm(stats.bed_db.size());
++        for (size_t i = 0; i < stats.bed_db.size(); i++)
++            norm[i] = std::min(1.f, std::max(0.f, (stats.bed_db[i] - floor_db) / -floor_db));
++        snprintf(overlay, sizeof(overlay), "BED %zuch%s", stats.bed_db.size(), stats.hrtf ? " HRTF" : "");
++        draw_graph("##audio_bed", norm.data(), (int)norm.size(), 1.0f, 30.0f, overlay);
++    }
++
++    ImGui::PopFont();
++}
++
+ void HudElements::gamemode(){
+     if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gamemode]){
+         ImguiNextColumnFirstItem();
+@@ -1976,6 +2111,7 @@ void HudElements::sort_elements(const std::pair<std::string, std::string>& optio
+         {"custom_text", {custom_text}},
+         {"custom_text_center", {custom_text_center}},
+         {"exec", {_exec}},
++        {"audio", {audio}},
+         {"battery", {battery}},
+         {"fps_only", {fps_only}},
+         {"fsr", {gamescope_fsr}},
+diff --git a/src/hud_elements.h b/src/hud_elements.h
+index 405e0ba..5bbce70 100644
+--- a/src/hud_elements.h
++++ b/src/hud_elements.h
+@@ -99,6 +99,7 @@ class HudElements{
+         static void gamemode();
+         static void graphs();
+         static void _exec();
++        static void audio();
+         static void battery();
+         static void fps_only();
+         static void gamescope_fsr();
+diff --git a/src/overlay_params.h b/src/overlay_params.h
+index 0ff802c..d730b85 100644
+--- a/src/overlay_params.h
++++ b/src/overlay_params.h
+@@ -88,6 +88,7 @@ struct Tracepoint;
+    OVERLAY_PARAM_BOOL(custom_text_center)            \
+    OVERLAY_PARAM_BOOL(custom_text)                   \
+    OVERLAY_PARAM_BOOL(exec)                          \
++   OVERLAY_PARAM_BOOL(audio)                          \
+    OVERLAY_PARAM_BOOL(vkbasalt)                      \
+    OVERLAY_PARAM_BOOL(gamemode)                      \
+    OVERLAY_PARAM_BOOL(battery)                       \

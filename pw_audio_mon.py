@@ -1,31 +1,38 @@
 #!/usr/bin/env python3
-"""Host-side PipeWire audio monitor for an in-game MangoHud overlay.
+"""Host-side PipeWire audio collector feeding the in-game MangoHud audio overlay.
 
-Captures the default sink monitor (per-channel RMS/peak via numpy) and polls
-`pw-top` (DSP load / xruns / quantum), then renders compact Unicode-sparkline
-HUD rows to files in $XDG_RUNTIME_DIR.  MangoHud `exec=cat`s those files, so the
-overlay updates live with one monitor and no game-side dependencies.
+The patched MangoHud "audio" element runs inside the game process and renders the
+HUD itself (DSP histogram, output L/R meters, per-channel bed bars). This daemon
+only gathers the data the element cannot see from inside the container and writes
+one machine-readable stats file the element reads:
 
-Rows written (one line each, no label - MangoHud's custom_text supplies labels):
-  pw-row-info.txt : q<quantum> <latency>ms <rate>k str<N> xrun:<N>
-  pw-row-dsp.txt  : <sparkline> <pct>%        (DSP load = pw-top B/Q, history)
-  pw-row-lvl.txt  : L<spark><dB> R<spark><dB>  (output level, history + dBFS, !=clip)
-  pw-hud.txt      : all of the above on one line (for a single-row config)
+    ~/.cache/pw-audio-hud/pw-stats.txt
+
+That path is under $HOME on purpose: Steam's pressure-vessel gives the game a
+private $XDG_RUNTIME_DIR, but $HOME is bind-mounted through, so a file there
+bridges the host (this daemon) and the in-container overlay.
+
+Data sources (all host-side):
+  - `pw-top -b -n 2`                          -> DSP load, xruns, quantum, rate, stream count
+  - capture of the default sink monitor       -> output L/R RMS levels (dBFS)
+  - the mmdevapi spatial stats file           -> per-channel bed dBFS + HRTF flag
+
+File format (one "key value..." line each; the element ignores unknown keys):
+    dsp <percent>
+    xrun <count>
+    quantum <frames>
+    rate <hz>
+    streams <count>
+    lvl <left_dbfs> <right_dbfs>
+    hrtf <0|1>
+    bed <0|1>
+    ch <NAME> <dbfs>        (one per bed channel)
 
 Run on the HOST before launching the game:
-  ./pw_audio_mon.py &
-Stop with Ctrl-C or `kill`.  See --help for options.
+    python3 pw_audio_mon.py &
 
-MangoHud (~/.config/MangoHud/MangoHud.conf), needs legacy_layout for exec=,
-and `env -u LD_PRELOAD` to dodge the Steam-container exec bug (#1339):
-  legacy_layout=1
-  custom_text=PW
-  exec=env -u LD_PRELOAD cat $XDG_RUNTIME_DIR/pw-row-info.txt
-  custom_text=DSP
-  exec=env -u LD_PRELOAD cat $XDG_RUNTIME_DIR/pw-row-dsp.txt
-  custom_text=Lvl
-  exec=env -u LD_PRELOAD cat $XDG_RUNTIME_DIR/pw-row-lvl.txt
-Launch the game with MangoHud enabled (Steam per-game toggle or `mangohud %command%`).
+Launch the game with MangoHud (our patched build) + `audio=1` in the config, and
+point the driver's WINE_SPATIAL_STATS at <dir>/pw-spatial.txt for the bed row.
 """
 import argparse
 import math
@@ -39,7 +46,6 @@ import time
 
 import numpy as np
 
-BLOCKS = " ▁▂▃▄▅▆▇█"            # 0..8, index 0 = space (silence/idle)
 RATE = 48000
 CHANNELS = 2
 
@@ -48,27 +54,12 @@ shared = {"dsp": 0.0, "xrun": 0, "quant": 0, "rate": 0, "streams": 0}
 shared_lock = threading.Lock()
 
 
-def spark(values, lo, hi):
-    """Render a list of values to a Unicode sparkline, each clamped to [lo, hi]."""
-    out = []
-    span = hi - lo if hi > lo else 1.0
-    for v in values:
-        i = int(round((v - lo) / span * (len(BLOCKS) - 1)))
-        out.append(BLOCKS[min(len(BLOCKS) - 1, max(0, i))])
-    return "".join(out)
-
-
 def dbfs(rms):
     return -120.0 if rms <= 1e-9 else 20.0 * math.log10(rms)
 
-def block(v, lo, hi):
-    span = hi - lo if hi > lo else 1.0
-    i = int(round((v - lo) / span * (len(BLOCKS) - 1)))
-    return BLOCKS[min(len(BLOCKS) - 1, max(0, i))]
 
-
-def read_spatial(path, floor):
-    """Parse the mmdevapi spatial stats file into a bed-meter row, or None."""
+def read_spatial(path):
+    """Parse the mmdevapi spatial stats file -> (hrtf, bed, [(name, dbfs), ...]) or None."""
     try:
         if time.time() - os.path.getmtime(path) > 2.0:
             return None                      # stale: game gone / stats off
@@ -78,22 +69,24 @@ def read_spatial(path, floor):
         return None
     if not txt or txt.endswith("idle"):
         return None
-    meta, chans = {}, []
+    hrtf = bed = False
+    chans = []
     for t in txt.split():
         if ":" not in t:
             continue
         k, v = t.split(":", 1)
-        if k in ("hrtf", "bed", "dyn"):
-            meta[k] = v
+        if k == "hrtf":
+            hrtf = v == "1"
+        elif k == "bed":
+            bed = v == "1"
+        elif k == "dyn":
+            pass
         else:
             try:
                 chans.append((k, float(v)))
             except ValueError:
                 pass
-    tag = "HRTF" if meta.get("hrtf") == "1" else "pan"
-    if not chans:
-        return f"{tag} (no bed)"
-    return tag + " " + " ".join(f"{n}{block(db, floor, 0)}" for n, db in chans)
+    return hrtf, bed, chans
 
 
 def atomic_write(path, text):
@@ -140,14 +133,14 @@ def pwtop_poll(interval):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="PipeWire audio monitor -> MangoHud overlay files")
+    ap = argparse.ArgumentParser(description="PipeWire audio monitor -> MangoHud audio overlay stats file")
     ap.add_argument("--source", default="@DEFAULT_MONITOR@", help="capture source (default: default sink monitor)")
-    ap.add_argument("--dir", default=os.environ.get("XDG_RUNTIME_DIR", "/tmp"), help="output dir for HUD files")
-    ap.add_argument("--interval", type=float, default=0.1, help="render interval seconds (default 0.1)")
-    ap.add_argument("--width", type=int, default=20, help="sparkline history width")
-    ap.add_argument("--floor", type=float, default=-54.0, help="level sparkline floor dBFS")
+    ap.add_argument("--dir", default=os.path.join(os.path.expanduser("~"), ".cache", "pw-audio-hud"),
+                    help="output dir (default ~/.cache/pw-audio-hud, shared into the Steam container; $XDG_RUNTIME_DIR is NOT)")
+    ap.add_argument("--interval", type=float, default=0.1, help="capture/update interval seconds (default 0.1)")
     ap.add_argument("--spatial", default=None, help="mmdevapi spatial stats file (default: <dir>/pw-spatial.txt)")
     args = ap.parse_args()
+    os.makedirs(args.dir, exist_ok=True)
 
     if not shutil.which("parecord"):
         sys.exit("parecord not found (install pipewire-pulse / pulseaudio-utils)")
@@ -166,14 +159,7 @@ def main():
     signal.signal(signal.SIGTERM, shutdown)
 
     chunk_bytes = int(args.interval * RATE) * CHANNELS * 4
-    hist_dsp, hist_l, hist_r = [], [], []
-    last_xrun, xrun_hot = 0, 0.0
-
-    info_p = os.path.join(args.dir, "pw-row-info.txt")
-    dsp_p = os.path.join(args.dir, "pw-row-dsp.txt")
-    lvl_p = os.path.join(args.dir, "pw-row-lvl.txt")
-    all_p = os.path.join(args.dir, "pw-hud.txt")
-    bed_p = os.path.join(args.dir, "pw-row-bed.txt")
+    stats_p = os.path.join(args.dir, "pw-stats.txt")
     spatial_path = args.spatial or os.path.join(args.dir, "pw-spatial.txt")
 
     while not stop.is_set():
@@ -183,36 +169,28 @@ def main():
         a = np.frombuffer(raw, dtype=np.float32)
         n = (a.size // CHANNELS) * CHANNELS
         a = a[:n].reshape(-1, CHANNELS)
-        rms_l, rms_r = float(np.sqrt(np.mean(a[:, 0] ** 2))), float(np.sqrt(np.mean(a[:, 1] ** 2)))
-        pk_l, pk_r = float(np.max(np.abs(a[:, 0]))), float(np.max(np.abs(a[:, 1])))
-        d_l, d_r = dbfs(rms_l), dbfs(rms_r)
+        d_l = dbfs(float(np.sqrt(np.mean(a[:, 0] ** 2))))
+        d_r = dbfs(float(np.sqrt(np.mean(a[:, 1] ** 2))))
 
-        for h, v in ((hist_l, d_l), (hist_r, d_r)):
-            h.append(v)
-            del h[:-args.width]
         with shared_lock:
             s = dict(shared)
-        hist_dsp.append(s["dsp"])
-        del hist_dsp[:-args.width]
 
-        clip = " CLIP" if max(pk_l, pk_r) >= 0.999 else ""
-        if s["xrun"] > last_xrun:
-            xrun_hot = time.monotonic()
-        last_xrun = s["xrun"]
-        xr_mark = "!" if time.monotonic() - xrun_hot < 2.0 else ""
-
-        lat = (s["quant"] / s["rate"] * 1000.0) if s["rate"] else 0.0
-        info = f"q{s['quant']} {lat:.1f}ms {s['rate'] // 1000}k str{s['streams']} xrun:{s['xrun']}{xr_mark}"
-        dsp = f"{spark(hist_dsp, 0, 100)} {s['dsp']:.0f}%"
-        lvl = (f"L{spark(hist_l, args.floor, 0)}{d_l:+.0f} "
-               f"R{spark(hist_r, args.floor, 0)}{d_r:+.0f}{clip}")
-        bed = read_spatial(spatial_path, args.floor)
-
-        atomic_write(info_p, info + "\n")
-        atomic_write(dsp_p, dsp + "\n")
-        atomic_write(lvl_p, lvl + "\n")
-        atomic_write(bed_p, (bed or "-") + "\n")
-        atomic_write(all_p, f"{info}  DSP {dsp}  {lvl}" + (f"  {bed}" if bed else "") + "\n")
+        lines = [
+            f"dsp {s['dsp']:.1f}",
+            f"xrun {s['xrun']}",
+            f"quantum {s['quant']}",
+            f"rate {s['rate']}",
+            f"streams {s['streams']}",
+            f"lvl {d_l:.1f} {d_r:.1f}",
+        ]
+        sp = read_spatial(spatial_path)
+        if sp:
+            hrtf, bed, chans = sp
+            lines.append(f"hrtf {1 if hrtf else 0}")
+            lines.append(f"bed {1 if bed else 0}")
+            for nm, db in chans:
+                lines.append(f"ch {nm} {db:.1f}")
+        atomic_write(stats_p, "\n".join(lines) + "\n")
 
     stop.set()
     rec.terminate()
