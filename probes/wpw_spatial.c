@@ -205,6 +205,40 @@ int main(int argc, char **argv)
         }
     }
 
+    /* GetStaticObjectPosition reports a canonical direction for every native
+     * bed channel, consistent with the HRTF render placement: left bits have
+     * negative x, right bits positive x, front negative z, back positive z,
+     * side channels sit on z~0, and each directional vector is ~unit length.
+     * LFE is non-directional but still resolves. */
+    {
+        static const struct { AudioObjectType t; const char *n; int sx, sz; } bed[] = {
+            { AudioObjectType_FrontLeft,   "FL", -1, -1 },
+            { AudioObjectType_FrontRight,  "FR", +1, -1 },
+            { AudioObjectType_FrontCenter, "FC",  0, -1 },
+            { AudioObjectType_SideLeft,    "SL", -1,  0 },
+            { AudioObjectType_SideRight,   "SR", +1,  0 },
+            { AudioObjectType_BackLeft,    "BL", -1, +1 },
+            { AudioObjectType_BackRight,   "BR", +1, +1 },
+        };
+        float x = 9.0f, y = 9.0f, z = 9.0f, mag;
+        int i, okx, okz;
+
+        for (i = 0; i < (int)(sizeof(bed) / sizeof(bed[0])); i++)
+        {
+            hr = ISpatialAudioClient_GetStaticObjectPosition(g_sac, bed[i].t, &x, &y, &z);
+            if (hr != S_OK) { printf("GetStaticObjectPosition(%s) %s\n", bed[i].n, hrs(hr)); return 2; }
+            mag = (float)sqrt((double)(x * x + y * y + z * z));
+            if (mag < 0.9f || mag > 1.1f) { printf("pos(%s) non-unit %.3f\n", bed[i].n, mag); return 2; }
+            okx = bed[i].sx < 0 ? (x < -0.01f) : bed[i].sx > 0 ? (x > 0.01f) : (x > -0.01f && x < 0.01f);
+            okz = bed[i].sz < 0 ? (z < -0.01f) : bed[i].sz > 0 ? (z > 0.01f) : (z > -0.01f && z < 0.01f);
+            if (!okx) { printf("pos(%s) bad x=%.3f\n", bed[i].n, x); return 2; }
+            if (!okz) { printf("pos(%s) bad z=%.3f\n", bed[i].n, z); return 2; }
+        }
+        hr = ISpatialAudioClient_GetStaticObjectPosition(g_sac, AudioObjectType_LowFrequency, &x, &y, &z);
+        if (hr != S_OK) { printf("GetStaticObjectPosition(LFE) %s\n", hrs(hr)); return 2; }
+        printf("static_positions=ok\n");
+    }
+
     /* loopback capture on the same endpoint */
     hr = IMMDevice_Activate(dev, &IID_IAudioClient, CLSCTX_ALL, NULL, (void **)&ac);
     if (FAILED(hr)) { printf("Activate %s\n", hrs(hr)); return 1; }
