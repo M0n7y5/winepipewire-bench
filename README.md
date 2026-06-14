@@ -40,10 +40,12 @@ results/                 per-run metric TSVs (generated, gitignored)
 bin/                     built probe .exe files (generated, gitignored)
 ```
 
-The probes are plain WASAPI clients; they reach the driver at runtime through
-the registry (`HKCU\Software\Wine\Drivers`, value `Audio`). `run.sh` saves the
-pre-run value and restores it on exit (including Ctrl-C). Rebuild only when a
-probe's own source changes, **not** when the driver changes.
+The probes are plain WASAPI clients; `run.sh` selects the driver at runtime via
+the `WINE_AUDIO_DRIVER` environment variable (exported to every probe), so the
+prefix registry is left untouched and a hard kill cannot pin the prefix to the
+wrong driver. It then confirms the requested driver actually loaded (parsing the
+mmdevapi trace) and skips if it fell back. Rebuild only when a probe's own source
+changes, **not** when the driver changes.
 
 ## Prerequisites
 

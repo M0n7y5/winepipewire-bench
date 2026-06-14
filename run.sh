@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # winepipewire.drv benchmark + functional harness.
 #
-# Selects the requested mmdevapi driver via the registry (saved and restored
-# on exit), then runs:
+# Selects the requested mmdevapi driver via WINE_AUDIO_DRIVER (no prefix
+# mutation), then runs:
 #   1. (gate) the Wine mmdevapi conformance subtests (all 6, both arches)
 #   2. wpw_phase   : inter-stream event-phase jitter + LWP    -> the sync metric
 #   3. wpw_multi   : inter-stream IAudioClock drift + monotonicity
@@ -96,22 +96,25 @@ SOCK="/run/user/$(id -u)/pipewire-0"
 echo "== wine mmdevapi driver benchmark =="
 echo "prefix=$WINEPREFIX  driver=$DRIVER  perf_gate=$PERF_GATE  N=$N  stress_n=$STRESS_N  dur=${DUR}s"
 
-# ---- driver selection (saved + restored on exit) -------------------------
-# reg query emits CRLF; strip the CR or restore_audio writes "driver\r" back,
-# which mmdevapi cannot match to any driver (kills audio in the prefix)
-PREV_AUDIO=$("$WINE" reg query 'HKCU\Software\Wine\Drivers' /v Audio 2>/dev/null | awk '/REG_SZ/{print $NF}' | tr -d '\r')
-restore_audio() {
-    if [ -n "$PREV_AUDIO" ]; then
-        "$WINE" reg add 'HKCU\Software\Wine\Drivers' /v Audio /d "$PREV_AUDIO" /f >/dev/null 2>&1
-    else
-        "$WINE" reg delete 'HKCU\Software\Wine\Drivers' /v Audio /f >/dev/null 2>&1
-    fi
-}
-trap restore_audio EXIT
-trap 'exit 130' INT TERM   # route signals through EXIT so restore_audio runs
-"$WINE" reg add 'HKCU\Software\Wine\Drivers' /v Audio /d "$DRIVER" /f >/dev/null 2>&1
-drv=$("$WINE" reg query 'HKCU\Software\Wine\Drivers' /v Audio 2>/dev/null | grep -oiE "$DRIVER" | head -1)
-[ "$drv" = "$DRIVER" ] && echo "driver = $DRIVER" || { echo "SKIP: could not select $DRIVER driver"; exit 77; }
+# ---- driver selection ----------------------------------------------------
+# WINE_AUDIO_DRIVER overrides mmdevapi's driver list (env > registry > default)
+# without touching the prefix registry, so there is nothing to save or restore
+# and a hard kill cannot leave the prefix pinned to the wrong driver.  It is
+# exported, so every probe below inherits it.  An older mmdevapi without the
+# knob ignores it and uses the registry, which the load check then catches.
+export WINE_AUDIO_DRIVER="$DRIVER"
+# Confirm the driver actually LOADED, not merely that it was requested:
+# mmdevapi silently falls back to the next driver when the requested one is
+# unavailable, which would benchmark the wrong driver.  Parse the one-shot
+# +mmdevapi "Selecting driver" trace from a quick capability probe.
+sel=$(WINEDEBUG=-all,+mmdevapi "$WINE" "$BIN/wpw_caps.exe" 2>&1 \
+    | sed -nE 's/.*Selecting driver L"([a-z]+)".*/\1/p' | tail -1)
+if [ "$sel" = "$DRIVER" ]; then
+    echo "driver = $DRIVER (via WINE_AUDIO_DRIVER)"
+else
+    echo "SKIP: requested $DRIVER but mmdevapi loaded '${sel:-none}'; driver unavailable or build lacks the WINE_AUDIO_DRIVER knob"
+    exit 77
+fi
 
 # ---- metrics TSV ----------------------------------------------------------
 mkdir -p "$BENCH_DIR/results"
