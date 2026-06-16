@@ -29,7 +29,8 @@
  * Prints one "freq=<hz> level_db=<x>" line per step (plus a header), so the
  * absolute scale is arbitrary; normalize each curve at 1 kHz when comparing.
  * Requires spatial sound enabled (WINE_SPATIAL_SOUND=1); prints spatial=off and
- * exits 77 otherwise.  Args: [mode=bed] [settle_ms=200] [window_ms=300].
+ * exits 77 otherwise.  Args: [mode=bed] [settle_ms=200] [window_ms=300]
+ *   [fmin fmax nsteps]: optional dense log-spaced grid (1 kHz auto-anchored).
  */
 #define COBJMACROS
 #define INITGUID
@@ -230,10 +231,8 @@ static IMMDevice *pick_device(IMMDeviceEnumerator *en, const char *want)
 
 int main(int argc, char **argv)
 {
-    static const double freqs[] = {
-        40, 55, 75, 100, 140, 190, 260, 360, 500, 700, 1000,
-        1400, 2000, 2800, 4000, 5600, 8000, 11000, 15000 };
-    const int nfreq = (int)(sizeof(freqs)/sizeof(freqs[0]));
+    double freqs[300];
+    int nfreq = 0;
     HRESULT hr;
     UINT32 rate, maxdyn = 0;
     int settle_ms, window_ms, k, cap;
@@ -247,6 +246,32 @@ int main(int argc, char **argv)
     g_bed = (argc > 1 && !strcmp(argv[1], "single")) ? 0 : 1;
     settle_ms = argc > 2 ? atoi(argv[2]) : 200;
     window_ms = argc > 3 ? atoi(argv[3]) : 300;
+
+    if (argc > 6) {
+        double fmin = atof(argv[4]), fmax = atof(argv[5]);
+        int ns = atoi(argv[6]), j, has1k = 0;
+        if (fmin < 1.0) fmin = 1.0;
+        if (fmax <= fmin) fmax = fmin * 2.0;
+        if (ns < 2) ns = 2;
+        if (ns > 256) ns = 256;
+        for (j = 0; j < ns; j++) {
+            double fv = fmin * pow(fmax / fmin, (double)j / (ns - 1));
+            freqs[nfreq++] = fv;
+            if (fv > 985.0 && fv < 1015.0) has1k = 1;
+        }
+        if (!has1k && nfreq < 299) freqs[nfreq++] = 1000.0;
+        for (j = 1; j < nfreq; j++) {   /* insertion sort ascending */
+            double key = freqs[j]; int m = j - 1;
+            while (m >= 0 && freqs[m] > key) { freqs[m + 1] = freqs[m]; m--; }
+            freqs[m + 1] = key;
+        }
+    } else {
+        static const double dfl[] = {
+            40, 55, 75, 100, 140, 190, 260, 360, 500, 700, 1000,
+            1400, 2000, 2800, 4000, 5600, 8000, 11000, 15000 };
+        for (nfreq = 0; nfreq < (int)(sizeof(dfl) / sizeof(dfl[0])); nfreq++)
+            freqs[nfreq] = dfl[nfreq];
+    }
 
     CoInitializeEx(NULL, COINIT_MULTITHREADED);
     hr = CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, &IID_IMMDeviceEnumerator, (void **)&en);
@@ -310,7 +335,7 @@ int main(int argc, char **argv)
         pr = goertzel(capR, count, freqs[k], rate);
         p = pl + pr;
         db = p > 1e-20 ? 10.0 * log10(p) : -200.0;
-        printf("freq=%d level_db=%.2f\n", (int)freqs[k], db);
+        printf("freq=%.1f level_db=%.2f\n", freqs[k], db);
         fflush(stdout);
     }
 
