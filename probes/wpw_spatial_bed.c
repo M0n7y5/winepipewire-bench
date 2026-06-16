@@ -37,6 +37,8 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <devpkey.h>
+#include <string.h>
 
 int _fltused = 0x9875;
 
@@ -171,6 +173,36 @@ static double ild_db(const float *l, const float *r, int a, int b, double rate)
     return 10.0 * log10(pl / pr);
 }
 
+/* Optional render-endpoint selection by friendly-name substring (env WPW_SINK),
+ * so the probe can target a null sink without touching the system default. */
+static IMMDevice *pick_device(IMMDeviceEnumerator *en, const char *want)
+{
+    IMMDeviceCollection *col = NULL;
+    IMMDevice *d = NULL, *found = NULL;
+    UINT n = 0, i;
+    if (FAILED(IMMDeviceEnumerator_EnumAudioEndpoints(en, eRender, DEVICE_STATE_ACTIVE, &col)))
+        return NULL;
+    IMMDeviceCollection_GetCount(col, &n);
+    for (i = 0; i < n; i++) {
+        IPropertyStore *ps = NULL;
+        PROPVARIANT pv;
+        char name[256] = "";
+        if (FAILED(IMMDeviceCollection_Item(col, i, &d))) continue;
+        if (SUCCEEDED(IMMDevice_OpenPropertyStore(d, STGM_READ, &ps))) {
+            PropVariantInit(&pv);
+            if (SUCCEEDED(IPropertyStore_GetValue(ps, (const PROPERTYKEY *)&DEVPKEY_Device_FriendlyName, &pv)) && pv.vt == VT_LPWSTR)
+                WideCharToMultiByte(CP_UTF8, 0, pv.pwszVal, -1, name, sizeof(name), NULL, NULL);
+            PropVariantClear(&pv);
+            IPropertyStore_Release(ps);
+        }
+        printf("  endpoint[%u]: %s\n", i, name);
+        if (!found && want && strstr(name, want)) { found = d; continue; }
+        IMMDevice_Release(d);
+    }
+    IMMDeviceCollection_Release(col);
+    return found;
+}
+
 int main(int argc, char **argv)
 {
     HRESULT hr;
@@ -197,8 +229,16 @@ int main(int argc, char **argv)
     hr = CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL,
                           &IID_IMMDeviceEnumerator, (void **)&en);
     if (FAILED(hr)) { printf("CoCreate %s\n", hrs(hr)); return 1; }
-    hr = IMMDeviceEnumerator_GetDefaultAudioEndpoint(en, eRender, eConsole, &dev);
-    if (FAILED(hr)) { printf("GetDefault %s\n", hrs(hr)); return 1; }
+    {
+        const char *want = getenv("WPW_SINK");
+        if (want && want[0]) {
+            dev = pick_device(en, want);
+            if (!dev) { printf("sink '%s' not found\n", want); return 1; }
+        } else {
+            hr = IMMDeviceEnumerator_GetDefaultAudioEndpoint(en, eRender, eConsole, &dev);
+            if (FAILED(hr)) { printf("GetDefault %s\n", hrs(hr)); return 1; }
+        }
+    }
 
     hr = IMMDevice_Activate(dev, &IID_ISpatialAudioClient, CLSCTX_ALL, NULL, (void **)&g_sac);
     if (FAILED(hr)) { printf("ISpatialAudioClient %s\n", hrs(hr)); return 1; }
